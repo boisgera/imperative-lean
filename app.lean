@@ -110,5 +110,129 @@ def display_until_stop (args : List String) : IO Unit := do
   IO.println ""
 
 
-def main (args : List String) : IO Unit :=
-  display_until_stop args
+structure X1 where
+
+def X1.forIn {β : Type u} [Monad m] (_ : X1) (b : β) (step : Int → β → m (ForInStep β)) : m β := do
+  match (<- step 7 b) with
+  | .yield _b' => return b   -- Not sure what should happen here.
+  | .done _b'' => return b
+
+instance : ForIn m X1 Int where
+  forIn := X1.forIn
+
+def it : X1 := {}
+
+def use_iterable_constant : IO Unit := do
+  let mut β := 1
+  for elt in it do -- where does elt come from here?
+    β := β + 1
+    IO.println elt
+  IO.println β
+
+-- first, only generic wrt the element in the list, we'll deal with
+-- the extra generality later that.
+-- We should be able to wrap anything that goes into a ForIn loop, right?
+structure Enumerate₁ (α :  Type u) where
+  iterable : List α
+
+def enumerate₁ (list : List α) : Enumerate₁ α :=
+  { iterable := list }
+
+def Enumerate₁.forIn (e : Enumerate₁ α) (b : β) (step : (Int × α) → β → IO (ForInStep β)) : IO β := do
+  let mut b' := b
+  let mut index := 0
+  for elt in e.iterable do
+    let step_result <- step (index, elt) b'
+    match step_result with
+    | .yield b'' => b' := b''
+    | .done b'' => return b''
+    index := index + 1
+  return b'
+
+instance (α : Type u) : ForIn IO (Enumerate₁ α) (Int × α) where
+  forIn := Enumerate₁.forIn
+
+/-
+ For the record, here is how ChatGPT solves the problem:
+
+    structure EnumerateSeq (α : Type) (seq : Seq α) where
+      idx : Nat
+
+    instance {α : Type} : ForIn m (EnumerateSeq α seq) (Nat × α) where
+      forIn (es : EnumerateSeq α seq) init f := do
+        let mut i := es.idx
+        let mut result := init
+        for x in seq do
+          result ← f (i, x) result
+          i := i + 1
+        return result
+
+    def enumerate {α : Type} (seq : Seq α) : EnumerateSeq α seq :=
+      { idx := 0 }
+
+So enumerate does not take a "forInable" but a Seq α, which kinda solves the
+multiple extra parameter problem I guess. But 1) I don't know what it is
+2) it's probably restrictive (?). Have a look at Seq to begin with I guess.
+
+Mmmm this is weird how this is implemented. Does it deal with early breaks
+dictated by f properly? I'd guess not (but that properly wouldn't be hard
+to patch if that was the case).
+
+ -/
+
+/-
+
+Alternate ChatGPT stuff:
+
+    structure Enumerate₂ (m : Type u₁ → Type u₂) (ρ : Type u) (α : Type v) where
+      seq : ρ
+      idx : Nat := 0 -- Start index for enumeration
+
+    -- Implement ForIn for Enumerate₂
+    instance {m : Type u₁ → Type u₂} {ρ : Type u} {α : Type v} [ForIn m ρ α] :
+        ForIn m (Enumerate₂ m ρ α) (Nat × α) where
+      forIn (e : Enumerate₂ m ρ α) init f := do
+        let mut i := e.idx
+        let mut acc := init
+        for x in e.seq do
+          acc ← f (i, x) acc
+          i := i + 1
+        return acc
+
+    -- Example usage
+    def enumerate₂ {m : Type u₁ → Type u₂} {ρ : Type u} {α : Type v} [ForIn m ρ α]
+        (seq : ρ) : Enumerate₂ m ρ α :=
+      { seq := seq }
+
+    def main : IO Unit :=
+      let xs := [10, 20, 30]
+      for (idx, val) in enumerate₂ xs do
+        IO.println s!"Index: {idx}, Value: {val}"
+
+ -/
+
+
+structure Enumerate₂ (m : Type -> Type) (ρ : Type) (α : Type) [ForIn m ρ α] where
+  it : ρ
+
+def enumerate₂ {m : Type -> Type} {ρ : Type} {α : Type} [ForIn m ρ α] (it : ρ) : Enumerate₂ m ρ α :=
+  {it := it}
+
+instance {m : Type -> Type} {ρ : Type} {α : Type} [ForIn m ρ α] :
+  ForIn m (Enumerate₂ m ρ α) (Nat × α) where
+  forIn enumerator initial step := do
+    let mut b := initial
+    let mut index : Nat := 0
+    for a in enumerator.it do
+      match (<- step (index, a) b) with
+      | .yield b' => do b := b' ; index := index + 1
+      | .done b' => return b'
+    return b
+
+def main (args : List String) : IO Unit := do
+  -- failed to synthesize instance for 'for_in%' notation
+  -- ForIn (EIO IO.Error) (Enumerate₂ ?m.7013 (List String) String) ?m.7238
+  -- for (i, arg) in enumerate₂ args do
+  --  IO.println (i, arg)
+  for (i, arg) in enumerate₂ (m := IO) args do
+    IO.println (i, arg)
